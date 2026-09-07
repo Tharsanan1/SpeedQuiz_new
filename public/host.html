@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed Quiz — Host</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<main class="wrap">
+  <header class="topbar">
+    <span class="logo small">⚡ Speed Quiz</span>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+
+  <!-- LOBBY -->
+  <section id="view-lobby" class="card" hidden>
+    <div class="lobby-grid">
+      <div>
+        <div class="muted">ROOM CODE</div>
+        <div id="room-code" class="room-code">····</div>
+        <div class="muted">Join link (share this)</div>
+        <div class="joinrow">
+          <code id="join-url" class="join-url"></code>
+          <button id="copy-btn" class="btn">Copy</button>
+        </div>
+        <p class="muted">Players join from their own browsers — no install needed.</p>
+        <div class="host-controls">
+          <button id="start-btn" class="btn primary big" disabled>Start (need ≥ 2 players)</button>
+        </div>
+      </div>
+      <div>
+        <h2>Players (<span id="player-count">0</span>)</h2>
+        <ul id="player-list" class="plist"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- QUESTION -->
+  <section id="view-question" class="card" hidden>
+    <div class="qmeta">
+      <span id="q-num" class="badge"></span>
+      <span id="q-type" class="badge dim"></span>
+      <span id="q-last" class="badge double" hidden>2× POINTS</span>
+      <span id="q-host-badge" class="badge host">HOST</span>
+    </div>
+    <h2 id="q-prompt" class="prompt"></h2>
+    <div class="timer"><div id="timer-fill" class="timer-fill"></div></div>
+    <div id="q-countdown" class="countdown"></div>
+    <form id="answer-form" autocomplete="off">
+      <input id="answer-input" maxlength="200" placeholder="Type your answer, press Enter" autocomplete="off">
+      <button type="submit" class="btn primary">Send</button>
+    </form>
+    <p id="answer-msg" class="answer-msg" hidden></p>
+    <div id="q-progress" class="progress"></div>
+    <ul id="q-answered" class="chips"></ul>
+    <div class="host-controls">
+      <button id="skip-btn" class="btn">Skip question</button>
+      <button id="end-btn" class="btn danger">End game</button>
+    </div>
+  </section>
+
+  <!-- REVEAL -->
+  <section id="view-reveal" class="card" hidden>
+    <div id="r-num" class="muted"></div>
+    <h2 class="prompt">Answer: <span id="r-answer" class="correct-answer"></span></h2>
+    <ul id="r-list" class="rlist"></ul>
+  </section>
+
+  <!-- LEADERBOARD -->
+  <section id="view-leaderboard" class="card" hidden>
+    <h2>Leaderboard</h2>
+    <ol id="l-list" class="llist"></ol>
+  </section>
+
+  <!-- FINAL -->
+  <section id="view-final" class="card" hidden>
+    <h2>🏆 Final results</h2>
+    <div id="podium" class="podium"></div>
+    <ol id="f-list" class="llist"></ol>
+    <div class="host-controls">
+      <button id="again-btn" class="btn primary big">Play again (same room)</button>
+      <button id="end-btn-2" class="btn danger">Back to lobby</button>
+    </div>
+  </section>
+
+  <p id="fatal" class="error" hidden></p>
+</main>
+<script src="/socket.io/socket.io.js"></script>
+<script src="host.js"></script>
+</body>
+</html>

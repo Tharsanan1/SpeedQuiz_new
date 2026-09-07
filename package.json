@@ -1,0 +1,16 @@
+{
+  "name": "speedquiz",
+  "version": "1.0.0",
+  "description": "Speed Quiz — real-time multiplayer browser quiz game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

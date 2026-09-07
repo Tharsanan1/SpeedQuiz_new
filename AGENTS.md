@@ -13,7 +13,7 @@ browsers. No installs for players, no database, no accounts.
   no build step, no CDN required (Socket.IO client is served by the server
   itself at `/socket.io/socket.io.js`).
 - **Run:** `npm install && npm start` → port 3000 (`PORT` env configurable).
-- **Repo:** https://github.com/Tharsanan1/SpeedQuiz (public).
+- **Repo:** https://github.com/Tharsanan1/SpeedQuiz_new (public).
 
 ## Layout
 
@@ -46,6 +46,12 @@ README.md
    changes (`rankChange` > 0 means moved up).
 5. **Final** — podium top 3 + full standings. Host `play-again` restarts in
    the same room with new random questions (spectators become players).
+
+**Live leaderboard:** `broadcastLiveBoard()` emits `live-leaderboard
+{index, total, standings}` on every correct answer, each new question, and
+kicks; `sendCatchUp()` also sends it to (re)joiners. Both `host.html` and
+`player.html` render it in an always-visible fixed side panel (`#liveboard`,
+hidden in lobby/final via `hideLiveBoard()`).
 
 ## Scoring (server only, `scoreFor()`)
 

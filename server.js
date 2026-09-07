@@ -412,6 +412,7 @@ function nextQuestion(room) {
     lastQuestion: room.qIndex === room.questions.length - 1,
   });
   sendProgress(room);
+  broadcastLiveBoard(room);
 
   clearRoomTimer(room);
   room.timer = setTimeout(() => endQuestion(room, false), QUESTION_TIME_MS);
@@ -428,6 +429,21 @@ function sendProgress(room) {
     })
     .filter(Boolean);
   io.to(room.code).emit('progress', { answered, total, answeredList });
+}
+
+/**
+ * Push the current total-score standings to everyone, in real time.
+ * Emitted on every score change (and each new question) so clients can
+ * keep an always-visible live leaderboard. Skipped in lobby/final where
+ * the lobby player list / final standings already cover it.
+ */
+function broadcastLiveBoard(room) {
+  if (room.phase === 'lobby' || room.phase === 'final') return;
+  io.to(room.code).emit('live-leaderboard', {
+    index: room.qIndex,
+    total: room.questions.length,
+    standings: standings(room, false),
+  });
 }
 
 function scoreFor(elapsed, streakAfter, isLast) {
@@ -469,6 +485,7 @@ function handleAnswer(room, player, rawAnswer) {
       correct: true, elapsed, points, base, bonus,
     });
     sendProgress(room);
+    broadcastLiveBoard(room);
     // End early when everyone answered correctly
     const total = activePlayers(room).length;
     const correctCount = [...room.questionResults.values()].filter((r) => r.correct).length;
@@ -732,6 +749,7 @@ io.on('connection', (socket) => {
     ack && ack({ ok: true });
     broadcastLobby(room);
     sendProgress(room);
+    broadcastLiveBoard(room);
   });
 
   socket.on('end-game', (data, ack) => {
@@ -785,6 +803,13 @@ io.on('connection', (socket) => {
 function sendCatchUp(room, player, socket) {
   // Bring a (re)joining or spectating client up to speed on the current phase.
   socket.emit('lobby', lobbyState(room));
+  if (room.phase !== 'lobby' && room.phase !== 'final') {
+    socket.emit('live-leaderboard', {
+      index: room.qIndex,
+      total: room.questions.length,
+      standings: standings(room, false),
+    });
+  }
   if (room.phase === 'question' && room.qIndex >= 0) {
     const q = room.questions[room.qIndex];
     socket.emit('question', {

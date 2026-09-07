@@ -71,10 +71,52 @@
   socket.on('lobby', function (state) {
     if (state.phase === 'lobby' || state.phase === 'final') renderLobby(state);
   });
-  socket.on('back-to-lobby', function () { resetAnswerUI(); });
+  socket.on('back-to-lobby', function () { resetAnswerUI(); hideLiveBoard(); });
+
+  // ---------- always-visible live leaderboard ----------
+  document.getElementById('live-toggle').addEventListener('click', function () {
+    var body = document.getElementById('live-body');
+    var hidden = body.hidden;
+    body.hidden = !hidden;
+    this.textContent = hidden ? '–' : '+';
+  });
+  socket.on('live-leaderboard', function (d) { renderLiveBoard(d); });
+
+  function renderLiveBoard(d) {
+    var lb = document.getElementById('liveboard');
+    lb.hidden = false;
+    document.body.classList.add('live-on');
+    document.getElementById('live-q').textContent = 'Question ' + (d.index + 1) + ' / ' + d.total;
+    var ol = document.getElementById('live-list');
+    ol.innerHTML = '';
+    d.standings.forEach(function (s) {
+      var li = document.createElement('li');
+      if (s.token === token) li.className = 'me-row';
+      var rank = document.createElement('span');
+      rank.className = 'rank'; rank.textContent = '#' + s.rank;
+      li.appendChild(rank);
+      var dot = document.createElement('span');
+      dot.className = 'dot'; dot.style.background = s.color;
+      li.appendChild(dot);
+      var nm = document.createElement('span');
+      nm.className = 'lname';
+      nm.textContent = s.name + (s.token === token ? ' (you)' : '');
+      li.appendChild(nm);
+      var sc = document.createElement('span');
+      sc.className = 'score'; sc.textContent = s.score;
+      li.appendChild(sc);
+      ol.appendChild(li);
+    });
+  }
+
+  function hideLiveBoard() {
+    document.getElementById('liveboard').hidden = true;
+    document.body.classList.remove('live-on');
+  }
 
   function renderLobby(state) {
     show('lobby');
+    hideLiveBoard();
     var list = document.getElementById('player-list');
     list.innerHTML = '';
     var count = 0;
@@ -286,6 +328,7 @@
   // ---------- final ----------
   socket.on('final', function (d) {
     show('final');
+    hideLiveBoard();
     var pod = document.getElementById('podium');
     pod.innerHTML = '';
     var medals = ['🥇', '🥈', '🥉'];

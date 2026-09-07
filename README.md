@@ -55,7 +55,9 @@ also work: `ngrok http 3000`.
    progress (`7 / 12 answered`) and who has answered — never the answer.
    The round ends at 0 s or when everyone answers correctly.
 4. Reveal (5 s): correct answer + per-question points, fastest first.
-5. Leaderboard (5 s): total scores with rank changes (▲/▼).
+5. Leaderboard (5 s): total scores with rank changes (▲/▼). A live
+   leaderboard sidebar is also visible on every screen throughout the game
+   and updates the instant anyone scores.
 6. Final screen: podium (top 3), full leaderboard, **Play again** for the host
    (same room, new random questions).
 

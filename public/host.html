@@ -13,6 +13,17 @@
     <span id="conn" class="conn">connecting…</span>
   </header>
 
+  <aside id="liveboard" class="liveboard" hidden>
+    <div class="live-head">
+      <span>🏆 Live scores</span>
+      <button id="live-toggle" class="btn mini" title="Collapse/expand">–</button>
+    </div>
+    <div id="live-body">
+      <div id="live-q" class="muted small"></div>
+      <ol id="live-list" class="livelist"></ol>
+    </div>
+  </aside>
+
   <!-- LOBBY -->
   <section id="view-lobby" class="card" hidden>
     <div class="lobby-grid">

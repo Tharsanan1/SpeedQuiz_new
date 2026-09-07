@@ -2,7 +2,8 @@
 
 /**
  * Speed Quiz — server-authoritative real-time multiplayer quiz.
- * Express + Socket.IO. No database, rooms live in memory.
+ * Express + Socket.IO. No database. Exactly ONE game at a time lives
+ * in memory (no room codes).
  */
 
 const express = require('express');
@@ -14,12 +15,15 @@ const { Server } = require('socket.io');
 
 // ---- Tunables (env overrides are for automated testing only) ----
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const QUESTIONS_PER_GAME = 12;
+const DEFAULT_NUM_QUESTIONS = 12;
+const MIN_NUM_QUESTIONS = 1;
+const MAX_NUM_QUESTIONS = 20;
+const QUESTION_COUNTS = [5, 8, 12, 15, 20]; // offered in the UI
+const MODES = ['classic', 'mcq'];
 const QUESTION_TIME_MS = parseInt(process.env.QUESTION_TIME_MS || '15000', 10);
 const REVEAL_TIME_MS = parseInt(process.env.REVEAL_TIME_MS || '5000', 10);
 const LEADERBOARD_TIME_MS = parseInt(process.env.LEADERBOARD_TIME_MS || '5000', 10);
 const LOCKOUT_MS = 2000;
-const ROOM_EMPTY_TTL_MS = 5 * 60 * 1000;
 const MAX_NAME_LEN = 20;
 const MAX_ANSWER_LEN = 200;
 const ANSWER_RATE_LIMIT = 5; // answers per second per player
@@ -30,17 +34,6 @@ const PALETTE = [
   '#9a6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1',
   '#000075', '#808080', '#ffffff', '#000000',
 ];
-
-// 4-letter codes, no ambiguous chars (no O, I). 0/1 are digits anyway.
-const CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-
-function makeRoomCode() {
-  let code = '';
-  for (let i = 0; i < 4; i++) {
-    code += CODE_LETTERS[crypto.randomInt(CODE_LETTERS.length)];
-  }
-  return code;
-}
 
 function makeToken() {
   return crypto.randomBytes(12).toString('hex');
@@ -53,11 +46,14 @@ function cleanStr(s, maxLen) {
   return s;
 }
 
-function cleanRoomCode(s) {
-  if (typeof s !== 'string') return null;
-  s = s.trim().toUpperCase();
-  if (!/^[A-Z]{4}$/.test(s)) return null;
-  return s;
+function cleanNumQuestions(n) {
+  const v = parseInt(n, 10);
+  if (!Number.isFinite(v)) return DEFAULT_NUM_QUESTIONS;
+  return Math.min(MAX_NUM_QUESTIONS, Math.max(MIN_NUM_QUESTIONS, v));
+}
+
+function cleanMode(m) {
+  return MODES.includes(m) ? m : 'classic';
 }
 
 // ---------------- Answer matching ----------------
@@ -128,6 +124,28 @@ function isCorrect(input, question) {
   return false;
 }
 
+/**
+ * MCQ matching: no fuzzy (single letters must not fuzzy-match).
+ * Accepts the choice letter (A-D, case-insensitive, mapped against the
+ * per-game shuffled `choices`) or the correct answer text (normalized).
+ */
+function isCorrectMCQ(input, question) {
+  if (typeof input !== 'string') return false;
+  const t = input.replace(/\s+/g, ' ').trim();
+  if (!t || t.length > MAX_ANSWER_LEN) return false;
+  const answers = question.answers || [];
+  const choices = Array.isArray(question.choices) ? question.choices : [];
+  if (/^[a-dA-D]$/.test(t) && choices.length >= 4) {
+    const picked = choices[t.toUpperCase().charCodeAt(0) - 65];
+    if (typeof picked !== 'string') return false;
+    const normPicked = normalize(picked);
+    return answers.some((acc) => normalize(acc) === normPicked);
+  }
+  const normInput = normalize(t);
+  if (!normInput) return false;
+  return answers.some((acc) => normalize(acc) === normInput);
+}
+
 // ---------------- Question bank ----------------
 
 let questionBank = [];
@@ -189,16 +207,32 @@ function shuffle(arr) {
   return arr;
 }
 
-/** Pick 12 questions with a roughly even mix of types, no repeats. */
-function selectQuestions() {
+/**
+ * Pick `count` questions. Classic mode: roughly even mix of types (never
+ * mcq), no repeats. MCQ mode: only mcq questions. If the bank is smaller
+ * than requested, cycle through (repeats possible but never back-to-back
+ * unless the pool has a single entry).
+ */
+function selectQuestions(count, mode) {
+  count = Math.min(MAX_NUM_QUESTIONS, Math.max(MIN_NUM_QUESTIONS, parseInt(count, 10) || DEFAULT_NUM_QUESTIONS));
+  if (!MODES.includes(mode)) mode = 'classic';
   const byType = new Map(); // type -> array of concrete questions
   for (const q of questionBank) {
     let concrete = null;
     if (q.generated === 'math') {
+      if (mode === 'mcq') continue;
       concrete = generateMathQuestion(q.op || 'mixed');
     } else if (q.prompt && Array.isArray(q.answers) && q.type) {
+      if (mode === 'mcq' && q.type !== 'mcq') continue;
+      if (mode !== 'mcq' && q.type === 'mcq') continue;
       concrete = { type: q.type, prompt: q.prompt, answers: q.answers.slice() };
       if (q.exact) concrete.exact = true;
+      if (q.type === 'mcq' && Array.isArray(q.choices) && q.choices.length >= 2) {
+        // Shuffle choices fresh for every game; letters map to this order.
+        concrete.choices = shuffle(q.choices.slice());
+      } else if (q.type === 'mcq') {
+        continue; // mcq without usable choices is unplayable
+      }
     }
     if (!concrete) continue;
     if (!byType.has(concrete.type)) byType.set(concrete.type, []);
@@ -211,10 +245,10 @@ function selectQuestions() {
   const idx = new Map(types.map((t) => [t, 0]));
   // Round-robin across types for an even mix.
   let guard = 0;
-  while (picked.length < QUESTIONS_PER_GAME && guard++ < 1000) {
+  while (picked.length < count && guard++ < 1000) {
     let progressed = false;
     for (const t of types) {
-      if (picked.length >= QUESTIONS_PER_GAME) break;
+      if (picked.length >= count) break;
       const list = byType.get(t);
       const i = idx.get(t);
       if (i < list.length) {
@@ -226,28 +260,38 @@ function selectQuestions() {
     if (!progressed) break;
   }
   // If bank is small, fill remaining from everything shuffled (may repeat types but not same object).
-  if (picked.length < QUESTIONS_PER_GAME) {
+  if (picked.length < count) {
     const all = shuffle([...byType.values()].flat().filter((q) => !picked.includes(q)));
-    while (picked.length < QUESTIONS_PER_GAME && all.length) picked.push(all.pop());
+    while (picked.length < count && all.length) picked.push(all.pop());
   }
-  return shuffle(picked).slice(0, QUESTIONS_PER_GAME);
+  // Still short (tiny bank): cycle through what we have so the game always has `count` questions.
+  const base = picked.slice();
+  let i = 0;
+  guard = 0;
+  while (picked.length < count && base.length && guard++ < 1000) {
+    picked.push(base[i++ % base.length]);
+  }
+  return shuffle(picked).slice(0, count);
 }
 
-// ---------------- Rooms ----------------
+// ---------------- The single game ----------------
 
-/** rooms: code -> room */
-const rooms = new Map();
+// This server hosts exactly ONE game at a time: no room codes, no
+// multi-room. `room` is null until someone creates a game.
 
-function createRoom() {
-  let code = makeRoomCode();
-  let guard = 0;
-  while (rooms.has(code) && guard++ < 100) code = makeRoomCode();
-  const room = {
-    code,
+/** Socket.IO channel every participant joins. */
+const GAME_CHANNEL = 'game';
+
+let room = null;
+
+function newRoom() {
+  return {
     phase: 'lobby', // lobby | question | reveal | leaderboard | final
     players: new Map(), // token -> player
     sockets: new Map(), // socketId -> token
     hostToken: null,
+    mode: 'classic', // 'classic' | 'mcq'
+    numQuestions: DEFAULT_NUM_QUESTIONS,
     questions: [],
     qIndex: -1,
     questionStartTime: 0,
@@ -256,44 +300,7 @@ function createRoom() {
     timer: null,
     prevRanks: new Map(),
     colorCursor: 0,
-    emptySince: null,
-    cleanupTimer: null,
   };
-  rooms.set(code, room);
-  return room;
-}
-
-function getRoom(code) {
-  return rooms.get(code) || null;
-}
-
-function scheduleRoomCleanup(room) {
-  if (room.cleanupTimer) return;
-  room.emptySince = Date.now();
-  room.cleanupTimer = setTimeout(() => {
-    if (connectedSocketCount(room) === 0) {
-      clearRoomTimer(room);
-      rooms.delete(room.code);
-      console.log(`Room ${room.code} deleted (empty 5 min)`);
-    }
-    room.cleanupTimer = null;
-    room.emptySince = null;
-  }, ROOM_EMPTY_TTL_MS);
-  if (room.cleanupTimer.unref) room.cleanupTimer.unref();
-}
-
-function cancelRoomCleanup(room) {
-  if (room.cleanupTimer) {
-    clearTimeout(room.cleanupTimer);
-    room.cleanupTimer = null;
-  }
-  room.emptySince = null;
-}
-
-function connectedSocketCount(room) {
-  let n = 0;
-  for (const p of room.players.values()) if (p.connected) n++;
-  return n;
 }
 
 function assignColor(room) {
@@ -320,8 +327,9 @@ function rosterPlayers(room) {
 
 function lobbyState(room) {
   return {
-    code: room.code,
     phase: room.phase,
+    mode: room.mode,
+    numQuestions: room.numQuestions,
     players: [...room.players.values()].map((p) => ({
       token: p.token,
       name: p.name,
@@ -337,7 +345,7 @@ function lobbyState(room) {
 }
 
 function broadcastLobby(room) {
-  io.to(room.code).emit('lobby', lobbyState(room));
+  io.to(GAME_CHANNEL).emit('lobby', lobbyState(room));
 }
 
 function clearRoomTimer(room) {
@@ -380,7 +388,7 @@ function startGame(room) {
     p.score = 0;
     p.streak = 0;
   }
-  room.questions = selectQuestions();
+  room.questions = selectQuestions(room.numQuestions, room.mode);
   room.qIndex = -1;
   snapshotRanks(room);
   // prevRanks cleared so first leaderboard shows no changes
@@ -402,11 +410,12 @@ function nextQuestion(room) {
   room.questionEndsAt = room.questionStartTime + QUESTION_TIME_MS;
   for (const p of room.players.values()) p.lockoutUntil = 0;
 
-  io.to(room.code).emit('question', {
+  io.to(GAME_CHANNEL).emit('question', {
     index: room.qIndex,
     total: room.questions.length,
     type: q.type,
     prompt: q.prompt,
+    choices: q.type === 'mcq' ? q.choices.slice() : undefined,
     endsAt: room.questionEndsAt,
     serverTime: Date.now(),
     lastQuestion: room.qIndex === room.questions.length - 1,
@@ -428,7 +437,7 @@ function sendProgress(room) {
       return p ? { token, name: p.name, color: p.color } : null;
     })
     .filter(Boolean);
-  io.to(room.code).emit('progress', { answered, total, answeredList });
+  io.to(GAME_CHANNEL).emit('progress', { answered, total, answeredList });
 }
 
 /**
@@ -439,7 +448,7 @@ function sendProgress(room) {
  */
 function broadcastLiveBoard(room) {
   if (room.phase === 'lobby' || room.phase === 'final') return;
-  io.to(room.code).emit('live-leaderboard', {
+  io.to(GAME_CHANNEL).emit('live-leaderboard', {
     index: room.qIndex,
     total: room.questions.length,
     standings: standings(room, false),
@@ -475,7 +484,8 @@ function handleAnswer(room, player, rawAnswer) {
   const q = room.questions[room.qIndex];
   const answer = typeof rawAnswer === 'string' ? rawAnswer.slice(0, MAX_ANSWER_LEN) : '';
   const elapsed = now - room.questionStartTime;
-  if (isCorrect(answer, q)) {
+  const good = q.type === 'mcq' ? isCorrectMCQ(answer, q) : isCorrect(answer, q);
+  if (good) {
     const streakAfter = player.streak + 1;
     const isLast = room.qIndex === room.questions.length - 1;
     const { base, bonus, points } = scoreFor(elapsed, streakAfter, isLast);
@@ -492,7 +502,9 @@ function handleAnswer(room, player, rawAnswer) {
     if (total > 0 && correctCount >= total) {
       endQuestion(room, true);
     }
-    return { ok: true, correct: true, points, elapsed };
+    // NOTE: points are deliberately withheld here — the player only learns
+    // they were correct at the reveal (see endQuestion), with celebrations.
+    return { ok: true, correct: true };
   }
   // Wrong: lock out 2s, may retry. Streak resets only at question end? Spec: resets on a wrong/no answer.
   // Reset streak immediately on a wrong answer (subsequent correct in same question still counts as new streak start).
@@ -526,11 +538,15 @@ function endQuestion(room, early) {
     if (a.correct !== b.correct) return a.correct ? -1 : 1;
     return (a.elapsed ?? Infinity) - (b.elapsed ?? Infinity);
   });
-  io.to(room.code).emit('reveal', {
+  // Flag the top scorer(s) of this question for the big celebration.
+  const topPoints = results.reduce((m, r) => (r.correct && r.points > m ? r.points : m), 0);
+  for (const r of results) r.top = r.correct && topPoints > 0 && r.points === topPoints;
+  io.to(GAME_CHANNEL).emit('reveal', {
     index: room.qIndex,
     total: room.questions.length,
     answers: q.answers.slice(0, 5),
     results,
+    topPoints,
     early,
   });
   room.timer = setTimeout(() => showLeaderboard(room), REVEAL_TIME_MS);
@@ -541,7 +557,7 @@ function showLeaderboard(room) {
   clearRoomTimer(room);
   room.phase = 'leaderboard';
   const table = standings(room, true);
-  io.to(room.code).emit('leaderboard', {
+  io.to(GAME_CHANNEL).emit('leaderboard', {
     index: room.qIndex,
     total: room.questions.length,
     standings: table,
@@ -555,7 +571,7 @@ function endToFinal(room) {
   clearRoomTimer(room);
   room.phase = 'final';
   const table = standings(room, true);
-  io.to(room.code).emit('final', {
+  io.to(GAME_CHANNEL).emit('final', {
     standings: table,
     podium: table.slice(0, 3),
   });
@@ -590,18 +606,38 @@ function promoteHostIfNeeded(room) {
     return a.joinedAt - b.joinedAt;
   });
   room.hostToken = candidates[0].token;
-  io.to(room.code).emit('host-changed', { hostToken: room.hostToken, name: candidates[0].name });
+  io.to(GAME_CHANNEL).emit('host-changed', { hostToken: room.hostToken, name: candidates[0].name });
   broadcastLobby(room);
 }
 
 io.on('connection', (socket) => {
   let joinedRoom = null;
 
+  // Lightweight status probe (no join needed): lets the landing page show
+  // whether a game exists and what phase it is in.
+  socket.on('get-status', (data, ack) => {
+    if (!room) return ack && ack({ ok: true, exists: false });
+    ack && ack({
+      ok: true,
+      exists: true,
+      phase: room.phase,
+      players: activePlayers(room).length,
+      mode: room.mode,
+      numQuestions: room.numQuestions,
+    });
+  });
+
   socket.on('create-room', (data, ack) => {
     try {
       const name = cleanStr(data && data.name, MAX_NAME_LEN);
       if (!name) return ack && ack({ ok: false, error: 'Enter a display name (1-20 chars).' });
-      const room = createRoom();
+      const numQuestions = cleanNumQuestions(data && data.numQuestions);
+      const mode = cleanMode(data && data.mode);
+      // Single-game server: creating a game replaces any existing one.
+      if (room) clearRoomTimer(room);
+      room = newRoom();
+      room.numQuestions = numQuestions;
+      room.mode = mode;
       const token = makeToken();
       const player = {
         token, name, color: assignColor(room), score: 0, streak: 0,
@@ -611,24 +647,22 @@ io.on('connection', (socket) => {
       room.players.set(token, player);
       room.sockets.set(socket.id, token);
       room.hostToken = token;
-      socket.join(room.code);
+      socket.join(GAME_CHANNEL);
       joinedRoom = room;
-      cancelRoomCleanup(room);
-      ack && ack({ ok: true, room: room.code, token });
+      ack && ack({ ok: true, token, mode, numQuestions });
       broadcastLobby(room);
     } catch (e) {
-      ack && ack({ ok: false, error: 'Could not create room.' });
+      ack && ack({ ok: false, error: 'Could not create game.' });
     }
   });
 
   socket.on('join-room', (data, ack) => {
     try {
-      const code = cleanRoomCode(data && data.room);
       const name = cleanStr(data && data.name, MAX_NAME_LEN);
       const incomingToken = typeof (data && data.token) === 'string' ? data.token.slice(0, 64) : null;
-      if (!code) return ack && ack({ ok: false, error: 'Room code must be 4 letters.' });
-      const room = getRoom(code);
-      if (!room) return ack && ack({ ok: false, error: 'Room not found.' });
+      if (!room) {
+        return ack && ack({ ok: false, error: 'No game yet — wait for the host to create one.', noGame: true });
+      }
 
       // Reconnect with token?
       if (incomingToken && room.players.has(incomingToken)) {
@@ -636,11 +670,10 @@ io.on('connection', (socket) => {
         p.connected = true;
         p.socketId = socket.id;
         room.sockets.set(socket.id, incomingToken);
-        socket.join(room.code);
+        socket.join(GAME_CHANNEL);
         joinedRoom = room;
-        cancelRoomCleanup(room);
         promoteHostIfNeeded(room);
-        ack && ack({ ok: true, room: room.code, token: incomingToken, reconnected: true, spectator: !!p.spectator, isHost: room.hostToken === incomingToken });
+        ack && ack({ ok: true, token: incomingToken, reconnected: true, spectator: !!p.spectator, isHost: room.hostToken === incomingToken, mode: room.mode, numQuestions: room.numQuestions });
         broadcastLobby(room);
         // Re-send current phase state so a refreshed client catches up.
         sendCatchUp(room, p, socket);
@@ -665,20 +698,19 @@ io.on('connection', (socket) => {
       };
       room.players.set(token, player);
       room.sockets.set(socket.id, token);
-      socket.join(room.code);
+      socket.join(GAME_CHANNEL);
       joinedRoom = room;
-      cancelRoomCleanup(room);
-      ack && ack({ ok: true, room: room.code, token, reconnected: false, spectator: player.spectator, isHost: false });
+      ack && ack({ ok: true, token, reconnected: false, spectator: player.spectator, isHost: false, mode: room.mode, numQuestions: room.numQuestions });
       broadcastLobby(room);
       if (isMidGame) sendCatchUp(room, player, socket);
     } catch (e) {
-      ack && ack({ ok: false, error: 'Could not join room.' });
+      ack && ack({ ok: false, error: 'Could not join game.' });
     }
   });
 
   socket.on('start-game', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player || player.token !== room.hostToken) {
       return ack && ack({ ok: false, error: 'Only the host can start.' });
@@ -695,14 +727,16 @@ io.on('connection', (socket) => {
 
   socket.on('submit-answer', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player) return ack && ack({ ok: false, error: 'Unknown player.' });
     const answer = typeof (data && data.answer) === 'string' ? data.answer : '';
     const res = handleAnswer(room, player, answer);
     ack && ack(res);
     if (res.ok && res.correct) {
-      socket.emit('answer-result', { correct: true, points: res.points, elapsed: res.elapsed });
+      // Correctness is confirmed only at the reveal; the player just
+      // gets a neutral "locked in" nudge (no points here).
+      socket.emit('answer-result', { correct: true });
     } else if (res.reason === 'wrong') {
       socket.emit('answer-result', { correct: false, retryInMs: res.retryInMs });
     } else if (res.reason === 'locked') {
@@ -712,7 +746,7 @@ io.on('connection', (socket) => {
 
   socket.on('skip-question', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player || player.token !== room.hostToken) {
       return ack && ack({ ok: false, error: 'Only the host can skip.' });
@@ -724,7 +758,7 @@ io.on('connection', (socket) => {
 
   socket.on('kick-player', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player || player.token !== room.hostToken) {
       return ack && ack({ ok: false, error: 'Only the host can kick.' });
@@ -742,7 +776,7 @@ io.on('connection', (socket) => {
         const s = io.sockets.sockets.get(sid);
         if (s) {
           s.emit('kicked', { message: 'You were kicked by the host.' });
-          s.leave(room.code);
+          s.leave(GAME_CHANNEL);
         }
       }
     }
@@ -754,7 +788,7 @@ io.on('connection', (socket) => {
 
   socket.on('end-game', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player || player.token !== room.hostToken) {
       return ack && ack({ ok: false, error: 'Only the host can end the game.' });
@@ -763,14 +797,14 @@ io.on('connection', (socket) => {
     room.phase = 'lobby';
     room.questions = [];
     room.qIndex = -1;
-    io.to(room.code).emit('back-to-lobby', {});
+    io.to(GAME_CHANNEL).emit('back-to-lobby', {});
     broadcastLobby(room);
     ack && ack({ ok: true });
   });
 
   socket.on('play-again', (data, ack) => {
     const room = joinedRoom;
-    if (!room) return ack && ack({ ok: false, error: 'Not in a room.' });
+    if (!room) return ack && ack({ ok: false, error: 'Not in the game.' });
     const player = getPlayerBySocket(room, socket.id);
     if (!player || player.token !== room.hostToken) {
       return ack && ack({ ok: false, error: 'Only the host can restart.' });
@@ -793,9 +827,7 @@ io.on('connection', (socket) => {
     }
     promoteHostIfNeeded(room);
     broadcastLobby(room);
-    if ([...room.players.values()].every((p) => !p.connected)) {
-      scheduleRoomCleanup(room);
-    }
+    // Single persistent game: no cleanup, the game simply waits for players.
     joinedRoom = null;
   });
 });
@@ -817,6 +849,7 @@ function sendCatchUp(room, player, socket) {
       total: room.questions.length,
       type: q.type,
       prompt: q.prompt,
+      choices: q.type === 'mcq' ? q.choices.slice() : undefined,
       endsAt: room.questionEndsAt,
       serverTime: Date.now(),
       lastQuestion: room.qIndex === room.questions.length - 1,
@@ -831,4 +864,4 @@ server.listen(PORT, () => {
   console.log(`SpeedQuiz listening on port ${PORT}`);
 });
 
-module.exports = { app, server, isCorrect, normalize, selectQuestions };
+module.exports = { app, server, isCorrect, isCorrectMCQ, normalize, selectQuestions };

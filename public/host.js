@@ -2,8 +2,6 @@
 (function () {
   'use strict';
 
-  var params = new URLSearchParams(location.search);
-  var roomCode = (params.get('room') || '').toUpperCase();
   var fatal = document.getElementById('fatal');
   function die(msg) {
     fatal.textContent = msg + ' ';
@@ -13,14 +11,14 @@
     a.textContent = 'Back to home';
     fatal.appendChild(a);
   }
-  if (!/^[A-Z]{4}$/.test(roomCode)) { die('Missing room code.'); return; }
 
+  // Single game per server: credentials are global, no room codes.
   var token = null, myName = '';
   try {
-    token = localStorage.getItem('sq_' + roomCode + '_token');
-    myName = localStorage.getItem('sq_' + roomCode + '_name') || '';
+    token = localStorage.getItem('sq_token');
+    myName = localStorage.getItem('sq_name') || '';
   } catch (e) { /* ignore */ }
-  if (!token) { die('No host credentials for this room. Create the game first.'); return; }
+  if (!token) { die('No credentials yet. Create or join the game first.'); return; }
 
   var socket = io();
   var views = ['lobby', 'question', 'reveal', 'leaderboard', 'final'];
@@ -34,11 +32,11 @@
   socket.on('connect', function () {
     connEl.textContent = 'connected';
     connEl.classList.add('on');
-    socket.emit('join-room', { room: roomCode, token: token, name: myName }, function (res) {
-      if (!res || !res.ok) { die((res && res.error) || 'Could not rejoin room.'); return; }
+    socket.emit('join-room', { token: token, name: myName }, function (res) {
+      if (!res || !res.ok) { die((res && res.error) || 'Could not join the game.'); return; }
       if (res.token && res.token !== token) {
         token = res.token;
-        try { localStorage.setItem('sq_' + roomCode + '_token', token); } catch (e) {}
+        try { localStorage.setItem('sq_token', token); } catch (e) {}
       }
     });
   });
@@ -47,8 +45,7 @@
 
   // ---------- lobby ----------
   var startBtn = document.getElementById('start-btn');
-  document.getElementById('room-code').textContent = roomCode;
-  var joinUrl = location.origin + '/?room=' + roomCode;
+  var joinUrl = location.origin + '/';
   document.getElementById('join-url').textContent = joinUrl;
   document.getElementById('copy-btn').addEventListener('click', function () {
     var t = this;
@@ -117,6 +114,8 @@
   function renderLobby(state) {
     show('lobby');
     hideLiveBoard();
+    document.getElementById('game-settings').textContent =
+      state.numQuestions + ' questions • ' + (state.mode === 'mcq' ? 'Multiple choice' : 'Classic (type answers)');
     var list = document.getElementById('player-list');
     list.innerHTML = '';
     var count = 0;
@@ -161,7 +160,9 @@
   // ---------- question ----------
   var timerInt = null, deadline = 0;
   var answerInput = document.getElementById('answer-input');
+  var answerForm = document.getElementById('answer-form');
   var answerMsg = document.getElementById('answer-msg');
+  var choicesBox = document.getElementById('choices');
   var locked = false;
 
   function resetAnswerUI() {
@@ -169,15 +170,89 @@
     answerInput.disabled = false;
     answerMsg.hidden = true;
     locked = false;
+    choicesBox.innerHTML = '';
+    choicesBox.hidden = true;
+    answerForm.style.display = 'flex';
+    document.removeEventListener('keydown', mcqKeys);
+  }
+
+  // Correctness is revealed only at the reveal phase — no points here.
+  function showLockedIn() {
+    locked = true;
+    answerMsg.textContent = '✓ Locked in — results at the reveal!';
+    answerMsg.className = 'answer-msg good';
+    answerMsg.hidden = false;
+    answerInput.disabled = true;
+    var btns = choicesBox.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+    document.removeEventListener('keydown', mcqKeys);
+  }
+
+  function submitAnswer(val) {
+    if (!val || !val.trim() || locked || answerInput.disabled) return;
+    socket.emit('submit-answer', { answer: val }, function (res) {
+      if (!res) return;
+      if (res.ok && res.correct) {
+        showLockedIn();
+      } else if (res.reason === 'wrong' || res.reason === 'locked') {
+        showWrong(res.retryInMs);
+      }
+    });
+  }
+
+  function showWrong(retryInMs) {
+    var s = Math.ceil((retryInMs || 2000) / 1000);
+    answerMsg.textContent = '✗ Wrong — try again in ' + s + 's';
+    answerMsg.className = 'answer-msg bad';
+    answerMsg.hidden = false;
+    answerInput.classList.remove('shake');
+    void answerInput.offsetWidth;
+    answerInput.classList.add('shake');
+  }
+
+  function mcqKeys(e) {
+    if (locked) return;
+    var k = (e.key || '').toUpperCase();
+    var idx = 'ABCD'.indexOf(k);
+    if (idx >= 0) {
+      var btns = choicesBox.querySelectorAll('button');
+      if (btns[idx]) { e.preventDefault(); submitAnswer('ABCD'[idx]); }
+    }
+  }
+
+  function renderChoices(letters) {
+    choicesBox.innerHTML = '';
+    letters.forEach(function (text, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn choice';
+      var letter = 'ABCD'[i];
+      var lab = document.createElement('span');
+      lab.className = 'choice-letter'; lab.textContent = letter;
+      b.appendChild(lab);
+      var tx = document.createElement('span');
+      tx.textContent = text;
+      b.appendChild(tx);
+      b.addEventListener('click', function () { submitAnswer(letter); });
+      choicesBox.appendChild(b);
+    });
+    choicesBox.hidden = false;
+    answerForm.style.display = 'none';
+    document.addEventListener('keydown', mcqKeys);
   }
 
   socket.on('question', function (q) {
     show('question');
     resetAnswerUI();
     document.getElementById('q-num').textContent = 'Q ' + (q.index + 1) + ' / ' + q.total;
-    document.getElementById('q-type').textContent = q.type;
+    document.getElementById('q-type').textContent = q.type === 'mcq' ? 'multiple choice' : q.type;
     document.getElementById('q-last').hidden = !q.lastQuestion;
     document.getElementById('q-prompt').textContent = q.prompt;
+    if (q.choices && q.choices.length) {
+      renderChoices(q.choices);
+    } else {
+      setTimeout(function () { answerInput.focus(); }, 50);
+    }
     var offset = Date.now() - q.serverTime;
     deadline = q.endsAt;
     clearInterval(timerInt);
@@ -193,6 +268,9 @@
       if (remain <= 0) {
         clearInterval(timerInt);
         answerInput.disabled = true;
+        var btns = choicesBox.querySelectorAll('button');
+        for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+        document.removeEventListener('keydown', mcqKeys);
       }
     }
     tick();
@@ -215,43 +293,14 @@
 
   document.getElementById('answer-form').addEventListener('submit', function (e) {
     e.preventDefault();
-    var val = answerInput.value;
-    if (!val.trim() || locked || answerInput.disabled) return;
-    socket.emit('submit-answer', { answer: val }, function (res) {
-      if (!res) return;
-      if (res.ok && res.correct) {
-        locked = true;
-        answerMsg.textContent = '✓ Correct! +' + res.points + ' pts';
-        answerMsg.className = 'answer-msg good';
-        answerMsg.hidden = false;
-        answerInput.disabled = true;
-      } else if (res.reason === 'wrong' || res.reason === 'locked') {
-        var s = Math.ceil((res.retryInMs || 2000) / 1000);
-        answerMsg.textContent = '✗ Wrong — try again in ' + s + 's';
-        answerMsg.className = 'answer-msg bad';
-        answerMsg.hidden = false;
-        answerInput.classList.remove('shake');
-        void answerInput.offsetWidth;
-        answerInput.classList.add('shake');
-      }
-    });
+    submitAnswer(answerInput.value);
   });
 
   socket.on('answer-result', function (r) {
     if (r.correct) {
-      locked = true;
-      answerMsg.textContent = '✓ Correct! +' + r.points + ' pts';
-      answerMsg.className = 'answer-msg good';
-      answerMsg.hidden = false;
-      answerInput.disabled = true;
+      showLockedIn();
     } else {
-      var s = Math.ceil((r.retryInMs || 2000) / 1000);
-      answerMsg.textContent = '✗ Wrong — try again in ' + s + 's';
-      answerMsg.className = 'answer-msg bad';
-      answerMsg.hidden = false;
-      answerInput.classList.remove('shake');
-      void answerInput.offsetWidth;
-      answerInput.classList.add('shake');
+      showWrong(r.retryInMs);
     }
   });
 
@@ -288,9 +337,37 @@
         pts.className += ' miss';
       }
       li.appendChild(pts);
+      if (x.top) {
+        var crown = document.createElement('span');
+        crown.className = 'top-badge'; crown.textContent = '⚡ TOP';
+        li.appendChild(crown);
+      }
       ul.appendChild(li);
     });
+    celebrateReveal(r);
   });
+
+  // Celebrations fire at the reveal — never during the question.
+  function celebrateReveal(r) {
+    var cel = document.getElementById('celebrate');
+    cel.hidden = true;
+    cel.className = 'celebrate';
+    var me = null;
+    for (var i = 0; i < r.results.length; i++) {
+      if (r.results[i].token === token) { me = r.results[i]; break; }
+    }
+    if (!me || !me.correct || typeof window.burstConfetti !== 'function') return;
+    if (me.top) {
+      cel.textContent = '⚡ TOP SCORER! +' + me.points + ' pts ⚡';
+      cel.classList.add('mega');
+      cel.hidden = false;
+      window.celebrateTop();
+    } else {
+      cel.textContent = '🎉 Correct! +' + me.points + ' pts';
+      cel.hidden = false;
+      window.burstConfetti({ count: 90 });
+    }
+  }
 
   // ---------- leaderboard ----------
   socket.on('leaderboard', function (d) {

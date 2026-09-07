@@ -2,7 +2,8 @@
 
 A real-time multiplayer quiz game that runs in the browser. One person runs the
 server on their laptop and shares a link; 10–25 players join from their own
-computers. No installs for players, no database, no accounts.
+computers. No installs for players, no database, no accounts. The server hosts
+exactly **one game at a time** — no room codes, players just enter a name.
 
 **Stack:** Node.js 20+, Express, Socket.IO (server-authoritative).
 Frontend is vanilla HTML/CSS/JS served statically by Express — no build step.
@@ -22,7 +23,10 @@ PORT=8080 npm start
 Then open `http://localhost:3000`:
 
 - **Create Game** — you become the host (and also a player who answers).
-- **Join Game** — enter the 4-letter room code + a display name.
+  Pick the number of questions (5/8/12/15/20) and the mode: **Classic**
+  (type answers) or **Multiple choice** (tap A–D).
+- **Join Game** — enter a display name, that's it. The landing page shows
+  whether the lobby is open or a game is in progress.
 
 ## Exposing the game to other devices (internet play)
 
@@ -39,27 +43,31 @@ cloudflared tunnel --url localhost:3000
 ```
 
 Cloudflare prints a public URL like `https://random-words.trycloudflare.com`.
-Share `https://random-words.trycloudflare.com/?room=ABCD` (or just the room
-code — the host screen shows a ready-to-copy join link). Alternatives that
-also work: `ngrok http 3000`.
+Share it as-is (the host screen shows a ready-to-copy game link — no code
+needed). Alternatives that also work: `ngrok http 3000`.
 
 > Everyone must use the **same** public URL (host screen included), otherwise
-> the host and players end up on different servers/rooms.
+> the host and players end up on different servers.
 
 ## How to play
 
-1. Host clicks **Create Game** and shares the join link / room code.
-2. Players join; the host screen shows a live player list. **Start** unlocks
-   with ≥ 2 players.
-3. 12 questions, 15 s each. Type an answer, press Enter. The screen shows live
-   progress (`7 / 12 answered`) and who has answered — never the answer.
-   The round ends at 0 s or when everyone answers correctly.
-4. Reveal (5 s): correct answer + per-question points, fastest first.
+1. Host clicks **Create Game**, chooses question count + mode, and shares
+   the game link.
+2. Players join with just a name; the host screen shows a live player list.
+   **Start** unlocks with ≥ 2 players.
+3. Each question lasts 15 s. Classic: type an answer, press Enter. Multiple
+   choice: tap A–D (or press the letter key). A correct answer locks in with
+   a neutral "Locked in" — you only find out you were right at the reveal,
+   when confetti drops. The round's top scorer gets a bigger celebration.
+   The screen shows live progress (`7 / 12 answered`) and who has answered —
+   never the answer. The round ends at 0 s or when everyone answers correctly.
+4. Reveal (5 s): correct answer + per-question points, fastest first, with
+   a ⚡ TOP badge for the highest scorer.
 5. Leaderboard (5 s): total scores with rank changes (▲/▼). A live
    leaderboard sidebar is also visible on every screen throughout the game
    and updates the instant anyone scores.
 6. Final screen: podium (top 3), full leaderboard, **Play again** for the host
-   (same room, new random questions).
+   (same settings, new random questions).
 
 Host controls: **Start**, **Skip question**, **Kick player**, **End game**.
 Late joiners during a game become spectators and join as players on
@@ -93,6 +101,10 @@ punctuation and diacritics) and compared against every accepted answer:
 Questions with `"exact": true` (the typing round) disable fuzzy matching —
 you must type the text character-for-character (whitespace runs normalized).
 
+Multiple-choice questions (`"type": "mcq"`) carry a `choices` array; players
+answer with the letter (A–D) or the choice text. No fuzzy matching applies —
+only the letter mapping and normalized text equality.
+
 ## Adding questions (`questions.json`)
 
 An array of objects:
@@ -103,36 +115,39 @@ An array of objects:
 { "type": "unscramble", "prompt": "Unscramble: NPELTA",                "answers": ["planet"] }
 { "type": "emoji",      "prompt": "Which movie? 🦁👑",                 "answers": ["the lion king", "lion king"] }
 { "type": "typing",     "prompt": "Type exactly: the quick brown fox", "answers": ["the quick brown fox"], "exact": true }
+{ "type": "mcq",        "prompt": "Red planet?",                       "choices": ["Venus", "Mars", "Jupiter", "Mercury"], "answers": ["Mars"] }
 ```
 
-- `type` is one of `trivia`, `math`, `unscramble`, `emoji`, `typing`
+- `type` is one of `trivia`, `math`, `unscramble`, `emoji`, `typing`, `mcq`
   (used for the on-screen badge and for balancing the mix).
 - `answers[0]` is shown as the correct answer on the reveal screen, so put
   the canonical spelling first and add common variants after it.
 - `{ "generated": "math", "op": "mul2x1" }` entries make the server invent a
   fresh random arithmetic question at runtime. Available ops: `mul2x1`
   (two-digit × one-digit), `add2`, `sub3x2`, `mul1`, `mixed`.
-- Each game picks 12 questions at random with a roughly even mix of types and
-  no repeats. Ship at least ~12 per type if you want every type in every game.
+- Each game picks N questions (host chooses 5/8/12/15/20): classic mode takes
+  a roughly even mix of non-mcq types with no repeats; mcq mode takes only
+  mcq questions (choice order is shuffled fresh every game). Ship at least
+  ~12 per type if you want every type in every game.
 
 Restart the server after editing `questions.json`.
 
 ## Project layout
 
 ```
-server.js              # Express + Socket.IO, all game logic
+server.js              # Express + Socket.IO, all game logic (single game)
 questions.json         # question bank
-public/index.html      # landing: Create Game / Join Game
+public/index.html      # landing: Create Game (count + mode) / Join Game
 public/host.html       # host screen (also plays)
 public/player.html     # player screen
-public/app.css, public/host.js, public/player.js
+public/app.css, public/host.js, public/player.js, public/confetti.js
 README.md
 ```
 
 ## Robustness notes
 
-- Room codes: 4 uppercase letters, no ambiguous characters (no O/I).
-- Rooms are in-memory and deleted after being empty for 5 minutes.
-- Every socket event is validated (room exists, correct phase, string lengths
-  capped); answers outside the question phase are ignored; answers are
-  rate-limited to 5/second per player.
+- One game per server, held in memory. Creating a game replaces any
+  existing one.
+- Every socket event is validated (game exists, correct phase, string
+  lengths capped); answers outside the question phase are ignored; answers
+  are rate-limited to 5/second per player.

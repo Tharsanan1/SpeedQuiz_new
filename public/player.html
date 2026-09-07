@@ -27,8 +27,7 @@
 
   <!-- LOBBY -->
   <section id="view-lobby" class="card" hidden>
-    <div class="muted">ROOM CODE</div>
-    <div id="room-code" class="room-code small-code">····</div>
+    <div id="game-info" class="settings-line"></div>
     <h2 id="lobby-title">Waiting for host to start…</h2>
     <ul id="player-list" class="plist"></ul>
     <p id="spectate-note" class="muted" hidden>You joined mid-game — you are spectating until the next game.</p>
@@ -52,6 +51,7 @@
       <input id="answer-input" maxlength="200" placeholder="Type your answer, press Enter" autocomplete="off">
       <button type="submit" class="btn primary">Send</button>
     </form>
+    <div id="choices" class="choices" hidden></div>
     <p id="answer-msg" class="answer-msg" hidden></p>
     <div id="q-progress" class="progress"></div>
     <ul id="q-answered" class="chips"></ul>
@@ -63,6 +63,7 @@
 
   <!-- REVEAL -->
   <section id="view-reveal" class="card" hidden>
+    <div id="celebrate" class="celebrate" hidden></div>
     <div id="r-num" class="muted"></div>
     <h2 class="prompt">Answer: <span id="r-answer" class="correct-answer"></span></h2>
     <ul id="r-list" class="rlist"></ul>
@@ -80,13 +81,14 @@
     <div id="podium" class="podium"></div>
     <ol id="f-list" class="llist"></ol>
     <div class="host-controls" id="final-host-controls" hidden>
-      <button id="again-btn" class="btn primary big">Play again (same room)</button>
+      <button id="again-btn" class="btn primary big">Play again (same settings)</button>
     </div>
   </section>
 
   <p id="fatal" class="error" hidden></p>
 </main>
 <script src="/socket.io/socket.io.js"></script>
+<script src="confetti.js"></script>
 <script src="player.js"></script>
 </body>
 </html>

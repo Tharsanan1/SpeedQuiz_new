@@ -28,14 +28,13 @@
   <section id="view-lobby" class="card" hidden>
     <div class="lobby-grid">
       <div>
-        <div class="muted">ROOM CODE</div>
-        <div id="room-code" class="room-code">····</div>
-        <div class="muted">Join link (share this)</div>
+        <div class="muted">GAME LINK (share this — one game per server)</div>
         <div class="joinrow">
           <code id="join-url" class="join-url"></code>
           <button id="copy-btn" class="btn">Copy</button>
         </div>
-        <p class="muted">Players join from their own browsers — no install needed.</p>
+        <div id="game-settings" class="settings-line"></div>
+        <p class="muted">Players open the link and tap Join — no code, no install.</p>
         <div class="host-controls">
           <button id="start-btn" class="btn primary big" disabled>Start (need ≥ 2 players)</button>
         </div>
@@ -62,6 +61,7 @@
       <input id="answer-input" maxlength="200" placeholder="Type your answer, press Enter" autocomplete="off">
       <button type="submit" class="btn primary">Send</button>
     </form>
+    <div id="choices" class="choices" hidden></div>
     <p id="answer-msg" class="answer-msg" hidden></p>
     <div id="q-progress" class="progress"></div>
     <ul id="q-answered" class="chips"></ul>
@@ -73,6 +73,7 @@
 
   <!-- REVEAL -->
   <section id="view-reveal" class="card" hidden>
+    <div id="celebrate" class="celebrate" hidden></div>
     <div id="r-num" class="muted"></div>
     <h2 class="prompt">Answer: <span id="r-answer" class="correct-answer"></span></h2>
     <ul id="r-list" class="rlist"></ul>
@@ -90,7 +91,7 @@
     <div id="podium" class="podium"></div>
     <ol id="f-list" class="llist"></ol>
     <div class="host-controls">
-      <button id="again-btn" class="btn primary big">Play again (same room)</button>
+      <button id="again-btn" class="btn primary big">Play again (same settings)</button>
       <button id="end-btn-2" class="btn danger">Back to lobby</button>
     </div>
   </section>
@@ -98,6 +99,7 @@
   <p id="fatal" class="error" hidden></p>
 </main>
 <script src="/socket.io/socket.io.js"></script>
+<script src="confetti.js"></script>
 <script src="host.js"></script>
 </body>
 </html>

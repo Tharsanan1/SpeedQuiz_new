@@ -9,29 +9,47 @@
 <body>
 <main class="wrap narrow">
   <h1 class="logo">⚡ Speed Quiz</h1>
-  <p class="tagline">Real-time multiplayer quiz. No installs, no accounts.</p>
+  <p class="tagline">Real-time multiplayer quiz. One game at a time, no installs, no accounts.</p>
+
+  <p id="game-status" class="status-line muted">Checking for a game…</p>
+  <div id="rejoin-box" class="card" hidden>
+    <span id="rejoin-text"></span>
+    <button id="rejoin-btn" class="btn primary">Rejoin game</button>
+  </div>
 
   <section class="card">
     <h2>Create Game</h2>
-    <p class="muted">You become the host <em>and</em> a player.</p>
+    <p class="muted">You become the host <em>and</em> a player. This replaces any existing game.</p>
     <label class="field">
       <span>Your display name</span>
       <input id="create-name" maxlength="20" autocomplete="nickname" placeholder="e.g. QuizMaster">
     </label>
+    <label class="field">
+      <span>Number of questions</span>
+      <select id="create-count" class="select">
+        <option value="5">5 questions</option>
+        <option value="8">8 questions</option>
+        <option value="12" selected>12 questions</option>
+        <option value="15">15 questions</option>
+        <option value="20">20 questions</option>
+      </select>
+    </label>
+    <div class="field">
+      <span>Game mode</span>
+      <label class="radio"><input type="radio" name="mode" value="classic" checked> Classic — type your answers</label>
+      <label class="radio"><input type="radio" name="mode" value="mcq"> Multiple choice — tap A, B, C or D</label>
+    </div>
     <button id="create-btn" class="btn primary big">Create Game</button>
   </section>
 
   <section class="card">
     <h2>Join Game</h2>
-    <label class="field">
-      <span>Room code (4 letters)</span>
-      <input id="join-room" maxlength="4" autocomplete="off" placeholder="ABCD" class="room-input">
-    </label>
+    <p class="muted">No code needed — there is only one game on this server.</p>
     <label class="field">
       <span>Your display name</span>
       <input id="join-name" maxlength="20" autocomplete="nickname" placeholder="e.g. Ravi">
     </label>
-    <button id="join-btn" class="btn big">Join Game</button>
+    <button id="join-btn" class="btn big" disabled>Join Game</button>
   </section>
 
   <p id="landing-error" class="error" hidden></p>
@@ -40,48 +58,99 @@
 <script>
 (function () {
   'use strict';
-  var params = new URLSearchParams(location.search);
-  var prefill = (params.get('room') || '').toUpperCase().slice(0, 4);
-  if (prefill) document.getElementById('join-room').value = prefill;
-
   var socket = io(); // relative URL: works behind tunnels/proxies
   var err = document.getElementById('landing-error');
+  var statusEl = document.getElementById('game-status');
+  var joinBtn = document.getElementById('join-btn');
+  var gameExists = false;
+
   function showError(m) { err.textContent = m; err.hidden = false; }
   function clearError() { err.hidden = true; }
-  function busy(btn, on) { btn.disabled = on; btn.classList.toggle('busy', on); }
+
+  function refreshStatus() {
+    socket.emit('get-status', {}, function (res) {
+      if (!res || !res.ok) return;
+      gameExists = !!res.exists;
+      if (!gameExists) {
+        statusEl.textContent = '⚪ No game yet — waiting for the host to create one…';
+        joinBtn.disabled = true;
+        return;
+      }
+      var mode = res.mode === 'mcq' ? 'Multiple choice' : 'Classic';
+      if (res.phase === 'lobby' || res.phase === 'final') {
+        statusEl.textContent = '🟢 Lobby open — ' + res.players + ' player(s), ' +
+          res.numQuestions + ' questions, ' + mode + '.';
+      } else {
+        statusEl.textContent = '🟡 Game in progress (' + mode + ') — you will join as a spectator.';
+      }
+      joinBtn.disabled = false;
+      joinBtn.textContent = (res.phase === 'lobby' || res.phase === 'final') ? 'Join Game' : 'Join as Spectator';
+    });
+  }
+  refreshStatus();
+  setInterval(refreshStatus, 2000);
+
+  // Offer one-click rejoin if this browser played before.
+  var savedToken = null, savedName = '';
+  try {
+    savedToken = localStorage.getItem('sq_token');
+    savedName = localStorage.getItem('sq_name') || '';
+  } catch (e) { /* ignore */ }
+  if (savedToken) {
+    document.getElementById('rejoin-box').hidden = false;
+    document.getElementById('rejoin-text').textContent =
+      'Welcome back' + (savedName ? ', ' + savedName : '') + '! ';
+    document.getElementById('rejoin-btn').addEventListener('click', function () {
+      clearError();
+      var btn = this; btn.disabled = true;
+      socket.emit('join-room', { token: savedToken, name: savedName }, function (res) {
+        btn.disabled = false;
+        if (!res || !res.ok) {
+          try { localStorage.removeItem('sq_token'); } catch (e) {}
+          document.getElementById('rejoin-box').hidden = true;
+          return showError((res && res.error) || 'Could not rejoin.');
+        }
+        storeCreds(res.token, savedName);
+        location.href = (res.isHost ? 'host.html' : 'player.html');
+      });
+    });
+  }
 
   document.getElementById('create-btn').addEventListener('click', function () {
     clearError();
     var name = document.getElementById('create-name').value.trim();
     if (!name) return showError('Enter a display name first.');
-    var btn = this; busy(btn, true);
-    socket.emit('create-room', { name: name }, function (res) {
-      busy(btn, false);
-      if (!res || !res.ok) return showError((res && res.error) || 'Could not create room.');
-      storeCreds(res.room, res.token, name);
-      location.href = 'host.html?room=' + encodeURIComponent(res.room);
+    if (gameExists && !confirm('A game already exists — creating a new one replaces it. Continue?')) return;
+    var count = document.getElementById('create-count').value;
+    var modeEl = document.querySelector('input[name="mode"]:checked');
+    var mode = modeEl ? modeEl.value : 'classic';
+    var btn = this; btn.disabled = true;
+    socket.emit('create-room', { name: name, numQuestions: count, mode: mode }, function (res) {
+      btn.disabled = false;
+      if (!res || !res.ok) return showError((res && res.error) || 'Could not create game.');
+      storeCreds(res.token, name);
+      location.href = 'host.html';
     });
   });
 
-  document.getElementById('join-btn').addEventListener('click', function () {
+  joinBtn.addEventListener('click', function () {
     clearError();
-    var room = document.getElementById('join-room').value.trim().toUpperCase();
     var name = document.getElementById('join-name').value.trim();
-    if (!/^[A-Z]{4}$/.test(room)) return showError('Room code must be 4 letters.');
     if (!name) return showError('Enter a display name first.');
-    var btn = this; busy(btn, true);
-    socket.emit('join-room', { room: room, name: name }, function (res) {
-      busy(btn, false);
-      if (!res || !res.ok) return showError((res && res.error) || 'Could not join room.');
-      storeCreds(res.room, res.token, name);
-      location.href = 'player.html?room=' + encodeURIComponent(res.room);
+    var btn = this; btn.disabled = true;
+    socket.emit('join-room', { name: name }, function (res) {
+      btn.disabled = false;
+      refreshStatus();
+      if (!res || !res.ok) return showError((res && res.error) || 'Could not join game.');
+      storeCreds(res.token, name);
+      location.href = 'player.html';
     });
   });
 
-  function storeCreds(room, token, name) {
+  function storeCreds(token, name) {
     try {
-      localStorage.setItem('sq_' + room + '_token', token);
-      localStorage.setItem('sq_' + room + '_name', name);
+      localStorage.setItem('sq_token', token);
+      localStorage.setItem('sq_name', name);
     } catch (e) { /* private mode etc. */ }
   }
 })();

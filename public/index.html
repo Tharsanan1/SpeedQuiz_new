@@ -67,6 +67,26 @@
   function showError(m) { err.textContent = m; err.hidden = false; }
   function clearError() { err.hidden = true; }
 
+  // Emit with an ack timeout so buttons never get stuck disabled when the
+  // server is unreachable (plain emit would simply never call back).
+  function emitAck(event, data, btn, cb) {
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      btn.disabled = false;
+      if (joinBtn) refreshStatus();
+      showError('Server not responding — is it still running?');
+    }, 5000);
+    socket.emit(event, data, function (res) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      btn.disabled = false;
+      cb(res);
+    });
+  }
+
   function refreshStatus() {
     socket.emit('get-status', {}, function (res) {
       if (!res || !res.ok) return;
@@ -103,8 +123,7 @@
     document.getElementById('rejoin-btn').addEventListener('click', function () {
       clearError();
       var btn = this; btn.disabled = true;
-      socket.emit('join-room', { token: savedToken, name: savedName }, function (res) {
-        btn.disabled = false;
+      emitAck('join-room', { token: savedToken, name: savedName }, btn, function (res) {
         if (!res || !res.ok) {
           try { localStorage.removeItem('sq_token'); } catch (e) {}
           document.getElementById('rejoin-box').hidden = true;
@@ -125,8 +144,7 @@
     var modeEl = document.querySelector('input[name="mode"]:checked');
     var mode = modeEl ? modeEl.value : 'classic';
     var btn = this; btn.disabled = true;
-    socket.emit('create-room', { name: name, numQuestions: count, mode: mode }, function (res) {
-      btn.disabled = false;
+    emitAck('create-room', { name: name, numQuestions: count, mode: mode }, btn, function (res) {
       if (!res || !res.ok) return showError((res && res.error) || 'Could not create game.');
       storeCreds(res.token, name);
       location.href = 'host.html';
@@ -138,8 +156,7 @@
     var name = document.getElementById('join-name').value.trim();
     if (!name) return showError('Enter a display name first.');
     var btn = this; btn.disabled = true;
-    socket.emit('join-room', { name: name }, function (res) {
-      btn.disabled = false;
+    emitAck('join-room', { name: name }, btn, function (res) {
       refreshStatus();
       if (!res || !res.ok) return showError((res && res.error) || 'Could not join game.');
       storeCreds(res.token, name);
